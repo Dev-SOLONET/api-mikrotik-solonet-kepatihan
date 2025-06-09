@@ -66,9 +66,20 @@ class PppController extends Controller
         $identity       = $client->query($query)->read();
 
         // if specified address list
-        if ($request->has('name')) {
+        if ($request->has('id_register')) {
+            $username = RouterSaleRegister::where('id_register', $request->id_register)
+                ->where('id_router', $router->id)
+                ->first();
+
+            if (!$username) {
+                return response()->json([
+                    'status'    => false,
+                    'message'   => 'PPP Secret not found for the specified register',
+                ], 404);
+            }
+
             $query          = new Query('/ppp/secret/print');
-            $query->where('name', $request->name);
+            $query->where('name', $username->username ?? '');
             $response       = $client->query($query)->read();
 
             // RESPONSE
@@ -116,7 +127,7 @@ class PppController extends Controller
     {
         // VALIDATE
         $validator = Validator::make($request->all(), [
-            'id_register'   => 'required|string|exists:routers_sale_registers,id_register',
+            'id_register'   => 'required|string',
         ]);
 
         if ($validator->fails()) {
@@ -128,7 +139,16 @@ class PppController extends Controller
 
         // Get router data
         $router_sale_register = RouterSaleRegister::where('id_register', $request->id_register)->first();
-        $router = Router::find($router_sale_register->id_router);
+        if (!$router_sale_register) {
+            return response()->json([
+                'status'    => false,
+                'message'   => 'Router Sale Register not found',
+            ], 404);
+        }
+
+        $router = Router::select('id', 'name', 'port', DB::raw('INET_NTOA(ip) as ip'))
+            ->where('id', $router_sale_register->id_router)
+            ->first();
 
         if (!$router) {
             return response()->json([
@@ -142,7 +162,7 @@ class PppController extends Controller
 
         // FIND PPP SECRET
         $query = new Query('/ppp/secret/print');
-        $query->where('name', $router_sale_register->name);
+        $query->where('name', $router_sale_register->username);
         $secrets = $client->query($query)->read();
 
         if (empty($secrets)) {
@@ -154,14 +174,27 @@ class PppController extends Controller
 
         // MAKE QUERY
         $query = new Query('/ppp/secret/set');
-        $query->equal('name', $request->name);
+        $query->equal('.id', $secrets[0]['.id']);
         $query->equal('disabled', 'true');
 
         try {
             $client->query($query)->read();
+
+            // FIND PPP SECRET AGAIN
+            $query = new Query('/ppp/secret/print');
+            $query->where('name', $router_sale_register->username);
+            $secrets = $client->query($query)->read();
+            if (empty($secrets)) {
+                return response()->json([
+                    'status'    => false,
+                    'message'   => 'Failed to disable PPP Secret, it was not found after disabling',
+                ], 500);
+            }
+            
             return response()->json([
                 'status'    => true,
                 'message'   => 'PPP Secret disabled successfully',
+                'data'      => $secrets[0],
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -175,7 +208,7 @@ class PppController extends Controller
     {
         // VALIDATE
         $validator = Validator::make($request->all(), [
-            'id_register'   => 'required|string|exists:routers_sale_registers,id_register',
+            'id_register'   => 'required|string',
         ]);
 
         if ($validator->fails()) {
@@ -187,7 +220,15 @@ class PppController extends Controller
 
         // Get router data
         $router_sale_register = RouterSaleRegister::where('id_register', $request->id_register)->first();
-        $router = Router::find($router_sale_register->id_router);
+        if (!$router_sale_register) {
+            return response()->json([
+                'status'    => false,
+                'message'   => 'Router Sale Register not found',
+            ], 404);
+        }
+        $router = Router::select('id', 'name', 'port', DB::raw('INET_NTOA(ip) as ip'))
+            ->where('id', $router_sale_register->id_router)
+            ->first();
         if (!$router) {
             return response()->json([
                 'status'    => false,
@@ -200,7 +241,7 @@ class PppController extends Controller
         
         // FIND PPP SECRET
         $query = new Query('/ppp/secret/print');
-        $query->where('name', $router_sale_register->name);
+        $query->where('name', $router_sale_register->username);
         $secrets = $client->query($query)->read();
         if (empty($secrets)) {
             return response()->json([
@@ -211,13 +252,27 @@ class PppController extends Controller
 
         // MAKE QUERY
         $query = new Query('/ppp/secret/set');
-        $query->equal('name', $request->name);
+        $query->equal('.id', $secrets[0]['.id']);
         $query->equal('disabled', 'false');
         try {
             $client->query($query)->read();
+
+            // FIND PPP SECRET AGAIN
+            $query = new Query('/ppp/secret/print');
+            $query->where('name', $router_sale_register->username);
+            $secrets = $client->query($query)->read();
+            if (empty($secrets)) {
+                return response()->json([
+                    'status'    => false,
+                    'message'   => 'Failed to enable PPP Secret, it was not found after enabling',
+                ], 500);
+            }
+
+            // RESPONSE
             return response()->json([
                 'status'    => true,
                 'message'   => 'PPP Secret enabled successfully',
+                'data'      => $secrets[0],
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -225,5 +280,51 @@ class PppController extends Controller
                 'message'   => 'Failed to enable PPP Secret: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    public function showActiveConnections($router_id, Request $request)
+    {
+        // VALIDATE
+        if (empty($router_id)) {
+            return response()->json([
+                'status'    => false,
+                'message'   => 'Router ID is required',
+            ]);
+        }
+
+        // Get router data
+        $router = Router::select('id', 'name', 'port', DB::raw('INET_NTOA(ip) as ip'))
+            ->where('id', $router_id)
+            ->first();
+
+        // validate
+        if (!$router) {
+            return response()->json([
+                'status'    => false,
+                'message'   => 'Router not found',
+            ], 404);
+        }
+
+        // INITIATE CLIENT
+        $client = ConnectionMikrotik($router->ip, $router->port);
+
+        // MAKE QUERY ROUTEROS IDENTIFY
+        $query          = new Query('/system/identity/print');
+        $identity       = $client->query($query)->read();
+
+        // MAKE QUERY ACTIVE CONNECTIONS
+        $query          = new Query('/ppp/active/print');
+        $response       = $client->query($query)->read();
+
+        // RESPONSE
+        $response = [
+            'router'            => $identity[0]['name'],
+            'active_connections'=> $response,
+        ];
+
+        return response()->json([
+            'status'    => true,
+            'data'      => $response,
+        ], 200);
     }
 }
