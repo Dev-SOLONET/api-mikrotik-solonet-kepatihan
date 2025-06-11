@@ -15,7 +15,10 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        // suspend users with expired subscriptions on tgl 11 of every month jam 06:00
+        $schedule->command('cron:suspend')
+            ->monthlyOn(11, '06:00')
+            ->timezone('Asia/Jakarta');
     }
 
     /**

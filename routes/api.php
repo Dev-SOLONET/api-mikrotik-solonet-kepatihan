@@ -19,8 +19,12 @@ Route::prefix('ppp')->group(function () {
     // PPP
     Route::prefix('secrets')->group(function () {
         Route::get('show/{router_id}', [PppController::class, 'showSecrets']);
+        Route::get('find/{id_register}', [PppController::class, 'findSecrets']);
         Route::post('disable', [PppController::class, 'disableSecrets']);
         Route::post('enable', [PppController::class, 'enableSecrets']);
+        Route::post('multiple-disable', [PppController::class, 'multipleDisableSecrets']);
+        Route::post('multiple-enable', [PppController::class, 'multipleEnableSecrets']);
+        Route::get('suspend-users', [PppController::class, 'suspendUser']);
     });
 });
 
